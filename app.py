@@ -1,96 +1,73 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from nba_api.stats.endpoints import playergamelog
-from nba_api.stats.static import players
+from nba_api.stats.endpoints import scoreboardv2
 
-st.set_page_config(page_title="Prop Model (No API)", layout="wide")
+st.set_page_config(page_title="Playoff Pulse", layout="wide")
 
-# =========================
-# GET PLAYER LIST
-# =========================
-nba_players = players.get_players()
-player_names = sorted([p["full_name"] for p in nba_players])
-
-st.title("🏀 Player Props Model (No API Version)")
-
-selected_player = st.selectbox("Select NBA Player", player_names)
-
-stat_type = st.selectbox("Stat Type", ["PTS", "REB", "AST"])
+st.title("🏀 Playoff Pulse Dashboard")
 
 # =========================
-# FETCH GAME LOGS
+# SIMPLE MOCK PLAYOFF BRACKET
+# (we upgrade to live data later)
 # =========================
-def get_stats(player_name):
-    player_id = next(
-        p["id"] for p in nba_players if p["full_name"] == player_name
-    )
+nba_playoffs = {
+    "East": [
+        {"series": "BOS vs MIA", "score": "2-1"},
+        {"series": "NYK vs PHI", "score": "1-2"}
+    ],
+    "West": [
+        {"series": "DEN vs LAL", "score": "3-0"},
+        {"series": "GSW vs DAL", "score": "2-2"}
+    ]
+}
 
-    logs = playergamelog.PlayerGameLog(player_id=player_id).get_data_frames()[0]
-
-    if logs.empty:
-        return None
-
-    return logs
-
-# =========================
-# MODEL
-# =========================
-def calculate_projection(data, stat):
-    last_games = data.head(15)
-
-    avg = last_games[stat].mean()
-    std = last_games[stat].std()
-
-    # simple projection adjustment
-    projection = avg + (np.random.normal(0, 1))
-
-    return avg, std, projection
-
-def predict(avg, projection):
-    diff = avg - projection
-    confidence = min(100, abs(diff) * 15)
-
-    return ("OVER" if diff > 0 else "UNDER"), confidence
+tab1, tab2 = st.tabs(["🏀 NBA Playoffs", "📊 Team Analyzer"])
 
 # =========================
-# RUN
+# TAB 1 - PLAYOFF BRACKET
 # =========================
-if st.button("Generate Pick"):
+with tab1:
+    st.subheader("NBA Playoff Bracket")
 
-    data = get_stats(selected_player)
+    col1, col2 = st.columns(2)
 
-    if data is None:
-        st.error("No data found for player.")
-        st.stop()
+    with col1:
+        st.markdown("### Eastern Conference")
+        for series in nba_playoffs["East"]:
+            st.write(f"**{series['series']}** — {series['score']}")
 
-    stat_map = {
-        "PTS": "PTS",
-        "REB": "REB",
-        "AST": "AST"
-    }
+    with col2:
+        st.markdown("### Western Conference")
+        for series in nba_playoffs["West"]:
+            st.write(f"**{series['series']}** — {series['score']}")
 
-    stat_col = stat_map[stat_type]
+# =========================
+# TAB 2 - SIMPLE TEAM MODEL
+# =========================
+teams = ["BOS", "MIA", "NYK", "PHI", "DEN", "LAL", "GSW", "DAL"]
 
-    avg, std, projection = calculate_projection(data, stat_col)
+with tab2:
+    team = st.selectbox("Select Team", teams)
 
-    pick, conf = predict(avg, projection)
+    np.random.seed(hash(team) % 1000)
 
-    # =========================
-    # OUTPUT
-    # =========================
-    st.subheader(f"📊 {selected_player} - {stat_type}")
+    # fake but realistic metrics
+    offense = np.random.randint(100, 120)
+    defense = np.random.randint(100, 120)
+    momentum = np.random.uniform(0.4, 0.9)
 
-    st.write("Last 10–15 game stats:")
-    st.dataframe(data[[stat_col]].head(10))
+    win_prob = (offense - defense + 10) * 2 + momentum * 20
+    win_prob = max(10, min(90, win_prob))
+
+    st.subheader(f"{team} Analysis")
 
     col1, col2, col3 = st.columns(3)
 
-    col1.metric("Player Avg", round(avg, 2))
-    col2.metric("Model Projection", round(projection, 2))
-    col3.metric("Std Dev", round(std, 2))
+    col1.metric("Offensive Rating", offense)
+    col2.metric("Defensive Rating", defense)
+    col3.metric("Momentum", round(momentum, 2))
 
-    st.subheader("🧠 Prediction")
-
-    st.success(f"Pick: {pick}")
-    st.info(f"Confidence: {round(conf, 1)}%")
+    st.subheader("🧠 Win Probability Estimate")
+    st.progress(int(win_prob))
+    st.write(f"Estimated Win Chance: **{round(win_prob, 1)}%**")
