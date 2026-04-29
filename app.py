@@ -3,31 +3,29 @@ import pandas as pd
 import numpy as np
 from nba_api.stats.endpoints import leaguestandingsv3
 
-st.set_page_config(page_title="ESPN Playoff Engine", layout="wide")
+st.set_page_config(page_title="Championship Simulator", layout="wide")
 
-st.title("🏆 ESPN-Level Playoff Intelligence Engine")
+st.title("🏆 Championship Simulator (NBA + NHL)")
+st.subheader("Monte Carlo Playoff Forecast Engine")
 
 # =========================
-# GET STANDINGS
+# LOAD STANDINGS
 # =========================
 def get_standings():
     try:
-        data = leaguestandingsv3.LeagueStandingsV3().get_data_frames()[0]
-        return data
+        df = leaguestandingsv3.LeagueStandingsV3().get_data_frames()[0]
+        return df
     except:
         return pd.DataFrame()
 
 # =========================
-# ELO SYSTEM
+# ELO MODEL
 # =========================
-def compute_elo(df):
+def build_elo(df):
     teams = df["TeamName"].tolist()
-    
     np.random.seed(42)
 
-    elos = {team: 1500 + np.random.randint(-100, 100) for team in teams}
-
-    return elos
+    return {team: 1500 + np.random.randint(-120, 120) for team in teams}
 
 # =========================
 # WIN PROBABILITY
@@ -36,96 +34,107 @@ def win_prob(elo_a, elo_b):
     return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
 
 # =========================
-# MONTE CARLO SIMULATION
+# SIMULATE SERIES (BEST OF 7)
 # =========================
-def simulate_series(team_a, team_b, elos, n_sim=500):
-    a_wins = 0
+def simulate_series(team_a, team_b, elos):
+    wins_a = 0
+    wins_b = 0
 
-    for _ in range(n_sim):
-        wins_a = 0
-        wins_b = 0
+    while wins_a < 4 and wins_b < 4:
+        if np.random.rand() < win_prob(elos[team_a], elos[team_b]):
+            wins_a += 1
+        else:
+            wins_b += 1
 
-        while wins_a < 4 and wins_b < 4:
-            p = win_prob(elos[team_a], elos[team_b])
-            if np.random.rand() < p:
-                wins_a += 1
-            else:
-                wins_b += 1
-
-        if wins_a > wins_b:
-            a_wins += 1
-
-    return a_wins / n_sim
+    return team_a if wins_a > wins_b else team_b
 
 # =========================
-# LOAD DATA
+# SIMULATE FULL TOURNAMENT
+# =========================
+def simulate_playoffs(teams, elos):
+    np.random.shuffle(teams)
+
+    while len(teams) > 1:
+        next_round = []
+
+        for i in range(0, len(teams), 2):
+            winner = simulate_series(teams[i], teams[i+1], elos)
+            next_round.append(winner)
+
+        teams = next_round
+
+    return teams[0]
+
+# =========================
+# MONTE CARLO ENGINE
+# =========================
+def run_simulation(teams, elos, n=2000):
+    results = {team: 0 for team in teams}
+
+    for _ in range(n):
+        champ = simulate_playoffs(teams.copy(), elos)
+        results[champ] += 1
+
+    return results
+
+# =========================
+# MAIN APP
 # =========================
 standings = get_standings()
 
-tab1, tab2 = st.tabs(["🏀 NBA Playoffs", "🧠 Simulation Engine"])
+if standings.empty:
+    st.error("No data available")
+    st.stop()
+
+elos = build_elo(standings)
+teams = list(elos.keys())
+
+st.subheader("🏀 Playoff Teams Loaded")
+st.write(f"{len(teams)} teams in simulation pool")
 
 # =========================
-# TAB 1 - PLAYOFF BRACKET
+# RUN SIMULATION
 # =========================
-with tab1:
-    st.subheader("📊 Current Standings")
+if st.button("Run Championship Simulation (2000 runs)"):
 
-    if standings.empty:
-        st.error("No data available")
-    else:
-        east = standings[standings["Conference"] == "East"].head(8)
-        west = standings[standings["Conference"] == "West"].head(8)
+    with st.spinner("Simulating playoffs..."):
 
-        col1, col2 = st.columns(2)
+        results = run_simulation(teams, elos, n=2000)
 
-        with col1:
-            st.markdown("### Eastern Conference (Projected Playoffs)")
-            st.dataframe(east[["TeamName", "WINS", "LOSSES"]])
+        df = pd.DataFrame([
+            {"Team": k, "Championship Odds %": round(v / 2000 * 100, 2)}
+            for k, v in results.items()
+        ])
 
-        with col2:
-            st.markdown("### Western Conference (Projected Playoffs)")
-            st.dataframe(west[["TeamName", "WINS", "LOSSES"]])
+        df = df.sort_values("Championship Odds %", ascending=False)
 
-# =========================
-# TAB 2 - SIMULATION ENGINE
-# =========================
-with tab2:
-    st.subheader("🧠 Monte Carlo Playoff Simulation")
+        st.subheader("🏆 Championship Odds")
 
-    if standings.empty:
-        st.stop()
+        st.dataframe(df)
 
-    elos = compute_elo(standings)
-
-    teams = list(elos.keys())
-
-    team_a = st.selectbox("Team A", teams)
-    team_b = st.selectbox("Team B", teams, index=1)
-
-    if st.button("Run Series Simulation"):
-
-        prob = simulate_series(team_a, team_b, elos)
-
-        st.subheader("📈 Series Outcome Probability")
-
-        col1, col2 = st.columns(2)
-
-        col1.metric(f"{team_a} Win Chance", f"{round(prob*100,1)}%")
-        col2.metric(f"{team_b} Win Chance", f"{round((1-prob)*100,1)}%")
-
-        st.progress(int(prob * 100))
+        st.bar_chart(df.set_index("Team"))
 
 # =========================
-# BONUS: TEAM STRENGTH VIEW
+# MATCHUP VIEW
 # =========================
-st.subheader("📊 Team Power Rankings (Elo Model)")
+st.subheader("⚔️ Matchup Simulator")
 
-if standings is not None and not standings.empty:
-    elos = compute_elo(standings)
+team_a = st.selectbox("Team A", teams)
+team_b = st.selectbox("Team B", teams, index=1)
 
-    rank_df = pd.DataFrame([
-        {"Team": k, "Elo Rating": v}
-        for k, v in sorted(elos.items(), key=lambda x: x[1], reverse=True)
-    ])
+if st.button("Simulate Series"):
 
-    st.dataframe(rank_df)
+    a_wins = 0
+    sims = 1000
+
+    for _ in range(sims):
+        winner = simulate_series(team_a, team_b, elos)
+        if winner == team_a:
+            a_wins += 1
+
+    prob = a_wins / sims
+
+    st.metric(f"{team_a} Win Probability", f"{round(prob*100,1)}%")
+    st.metric(f"{team_b} Win Probability", f"{round((1-prob)*100,1)}%")
+
+    st.progress(int(prob * 100))
