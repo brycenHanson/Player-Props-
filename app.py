@@ -1,73 +1,131 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from nba_api.stats.endpoints import scoreboardv2
+from nba_api.stats.endpoints import leaguestandingsv3
 
-st.set_page_config(page_title="Playoff Pulse", layout="wide")
+st.set_page_config(page_title="ESPN Playoff Engine", layout="wide")
 
-st.title("🏀 Playoff Pulse Dashboard")
+st.title("🏆 ESPN-Level Playoff Intelligence Engine")
 
 # =========================
-# SIMPLE MOCK PLAYOFF BRACKET
-# (we upgrade to live data later)
+# GET STANDINGS
 # =========================
-nba_playoffs = {
-    "East": [
-        {"series": "BOS vs MIA", "score": "2-1"},
-        {"series": "NYK vs PHI", "score": "1-2"}
-    ],
-    "West": [
-        {"series": "DEN vs LAL", "score": "3-0"},
-        {"series": "GSW vs DAL", "score": "2-2"}
-    ]
-}
+def get_standings():
+    try:
+        data = leaguestandingsv3.LeagueStandingsV3().get_data_frames()[0]
+        return data
+    except:
+        return pd.DataFrame()
 
-tab1, tab2 = st.tabs(["🏀 NBA Playoffs", "📊 Team Analyzer"])
+# =========================
+# ELO SYSTEM
+# =========================
+def compute_elo(df):
+    teams = df["TeamName"].tolist()
+    
+    np.random.seed(42)
+
+    elos = {team: 1500 + np.random.randint(-100, 100) for team in teams}
+
+    return elos
+
+# =========================
+# WIN PROBABILITY
+# =========================
+def win_prob(elo_a, elo_b):
+    return 1 / (1 + 10 ** ((elo_b - elo_a) / 400))
+
+# =========================
+# MONTE CARLO SIMULATION
+# =========================
+def simulate_series(team_a, team_b, elos, n_sim=500):
+    a_wins = 0
+
+    for _ in range(n_sim):
+        wins_a = 0
+        wins_b = 0
+
+        while wins_a < 4 and wins_b < 4:
+            p = win_prob(elos[team_a], elos[team_b])
+            if np.random.rand() < p:
+                wins_a += 1
+            else:
+                wins_b += 1
+
+        if wins_a > wins_b:
+            a_wins += 1
+
+    return a_wins / n_sim
+
+# =========================
+# LOAD DATA
+# =========================
+standings = get_standings()
+
+tab1, tab2 = st.tabs(["🏀 NBA Playoffs", "🧠 Simulation Engine"])
 
 # =========================
 # TAB 1 - PLAYOFF BRACKET
 # =========================
 with tab1:
-    st.subheader("NBA Playoff Bracket")
+    st.subheader("📊 Current Standings")
 
-    col1, col2 = st.columns(2)
+    if standings.empty:
+        st.error("No data available")
+    else:
+        east = standings[standings["Conference"] == "East"].head(8)
+        west = standings[standings["Conference"] == "West"].head(8)
 
-    with col1:
-        st.markdown("### Eastern Conference")
-        for series in nba_playoffs["East"]:
-            st.write(f"**{series['series']}** — {series['score']}")
+        col1, col2 = st.columns(2)
 
-    with col2:
-        st.markdown("### Western Conference")
-        for series in nba_playoffs["West"]:
-            st.write(f"**{series['series']}** — {series['score']}")
+        with col1:
+            st.markdown("### Eastern Conference (Projected Playoffs)")
+            st.dataframe(east[["TeamName", "WINS", "LOSSES"]])
+
+        with col2:
+            st.markdown("### Western Conference (Projected Playoffs)")
+            st.dataframe(west[["TeamName", "WINS", "LOSSES"]])
 
 # =========================
-# TAB 2 - SIMPLE TEAM MODEL
+# TAB 2 - SIMULATION ENGINE
 # =========================
-teams = ["BOS", "MIA", "NYK", "PHI", "DEN", "LAL", "GSW", "DAL"]
-
 with tab2:
-    team = st.selectbox("Select Team", teams)
+    st.subheader("🧠 Monte Carlo Playoff Simulation")
 
-    np.random.seed(hash(team) % 1000)
+    if standings.empty:
+        st.stop()
 
-    # fake but realistic metrics
-    offense = np.random.randint(100, 120)
-    defense = np.random.randint(100, 120)
-    momentum = np.random.uniform(0.4, 0.9)
+    elos = compute_elo(standings)
 
-    win_prob = (offense - defense + 10) * 2 + momentum * 20
-    win_prob = max(10, min(90, win_prob))
+    teams = list(elos.keys())
 
-    st.subheader(f"{team} Analysis")
+    team_a = st.selectbox("Team A", teams)
+    team_b = st.selectbox("Team B", teams, index=1)
 
-    col1, col2, col3 = st.columns(3)
+    if st.button("Run Series Simulation"):
 
-    col1.metric("Offensive Rating", offense)
-    col2.metric("Defensive Rating", defense)
-    col3.metric("Momentum", round(momentum, 2))
+        prob = simulate_series(team_a, team_b, elos)
 
-    st.subheader("🧠 Win Probability Estimate")
-    st.progress(int(win_prob))
-    st.write(f"Estimated Win Chance: **{round(win_prob, 1)}%**")
+        st.subheader("📈 Series Outcome Probability")
+
+        col1, col2 = st.columns(2)
+
+        col1.metric(f"{team_a} Win Chance", f"{round(prob*100,1)}%")
+        col2.metric(f"{team_b} Win Chance", f"{round((1-prob)*100,1)}%")
+
+        st.progress(int(prob * 100))
+
+# =========================
+# BONUS: TEAM STRENGTH VIEW
+# =========================
+st.subheader("📊 Team Power Rankings (Elo Model)")
+
+if standings is not None and not standings.empty:
+    elos = compute_elo(standings)
+
+    rank_df = pd.DataFrame([
+        {"Team": k, "Elo Rating": v}
+        for k, v in sorted(elos.items(), key=lambda x: x[1], reverse=True)
+    ])
+
+    st.dataframe(rank_df)
