@@ -1,93 +1,124 @@
 import streamlit as st
+import requests
 import pandas as pd
 import numpy as np
-import random
-import time
 
-st.set_page_config(page_title="Player Props Finder", layout="wide")
+st.set_page_config(page_title="Player Props AI", layout="wide")
 
-st.title("🔥 Best Player Props Finder (NBA | NHL | MLB)")
+# =========================
+# CONFIG
+# =========================
+API_KEY = "YOUR_ODDS_API_KEY"
+BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
-# -----------------------------
-# SIMULATED DATA (REPLACE WITH API LATER)
-# -----------------------------
-def generate_fake_props(league):
-    players = []
+SPORTS = {
+    "NBA": "basketball_nba",
+    "NHL": "icehockey_nhl",
+    "MLB": "baseball_mlb"
+}
 
-    if league == "NBA":
-        stat = "Points"
-        names = ["LeBron James", "Luka Doncic", "Steph Curry", "Jayson Tatum", "Kevin Durant"]
+# =========================
+# FETCH ODDS
+# =========================
+def fetch_props(sport_key):
+    url = f"{BASE_URL}/{sport_key}/odds"
+    params = {
+        "apiKey": API_KEY,
+        "regions": "us",
+        "markets": "player_points,player_shots,player_hits",
+        "oddsFormat": "american"
+    }
 
-    elif league == "NHL":
-        stat = "Shots"
-        names = ["Connor McDavid", "Nathan MacKinnon", "Auston Matthews", "Sidney Crosby", "David Pastrnak"]
+    try:
+        res = requests.get(url, params=params)
+        data = res.json()
+        return data
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
+        return []
 
+# =========================
+# MOCK PLAYER STATS (replace with real dataset later)
+# =========================
+def get_player_avg(player_name, stat_type):
+    np.random.seed(abs(hash(player_name)) % 10000)
+
+    base = {
+        "points": 20,
+        "shots": 5,
+        "hits": 3
+    }
+
+    noise = np.random.normal(0, 3)
+    return base.get(stat_type, 10) + noise
+
+# =========================
+# SIMPLE MODEL
+# =========================
+def predict(player_avg, line):
+    diff = player_avg - line
+
+    confidence = min(100, abs(diff) * 12)
+
+    if diff > 0:
+        return "OVER", confidence
     else:
-        stat = "Hits"
-        names = ["Aaron Judge", "Shohei Ohtani", "Mookie Betts", "Freddie Freeman", "Juan Soto"]
+        return "UNDER", confidence
 
-    for name in names:
-        line = random.uniform(1.5, 30)
-        last5 = np.random.normal(loc=line, scale=3, size=5)
-
-        avg = np.mean(last5)
-        hit_rate = sum(last5 > line) / 5
-
-        edge = avg - line
-
-        players.append({
-            "Player": name,
-            "Stat": stat,
-            "Line": round(line, 2),
-            "Last 5 Avg": round(avg, 2),
-            "Hit Rate": f"{hit_rate*100:.0f}%",
-            "Edge": round(edge, 2)
-        })
-
-    return pd.DataFrame(players)
-
-# -----------------------------
-# SCORING FUNCTION
-# -----------------------------
-def find_best_props(df):
-    df["Score"] = df["Edge"] * 2 + df["Last 5 Avg"]
-    return df.sort_values(by="Score", ascending=False)
-
-# -----------------------------
+# =========================
 # UI
-# -----------------------------
-league = st.selectbox("Select League", ["NBA", "NHL", "MLB"])
+# =========================
+st.title("🏀🏒⚾ Player Props Over/Under AI Model")
 
-if st.button("Find Best Props"):
-    with st.spinner("Analyzing player props..."):
-        time.sleep(1)
+sport = st.selectbox("Select Sport", list(SPORTS.keys()))
+sport_key = SPORTS[sport]
 
-        df = generate_fake_props(league)
-        best = find_best_props(df)
+if st.button("Load Live Props"):
+    data = fetch_props(sport_key)
 
-        st.subheader("📊 All Props")
-        st.dataframe(df)
+    if not data:
+        st.warning("No data returned. Check API key or limits.")
+    else:
+        rows = []
 
-        st.subheader("🔥 Best Picks Today")
-        st.dataframe(best.head(3))
+        for game in data:
+            for bookmaker in game.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    if "player" in market["key"]:
+                        for outcome in market["outcomes"]:
+                            rows.append({
+                                "player": outcome.get("description"),
+                                "prop": market["key"],
+                                "line": outcome.get("point", 0)
+                            })
 
-        # Highlight best pick
-        top = best.iloc[0]
+        df = pd.DataFrame(rows)
 
-        st.success(
-            f"Top Play: {top['Player']} OVER {top['Line']} {top['Stat']} "
-            f"(Edge: {top['Edge']}, Hit Rate: {top['Hit Rate']})"
-        )
+        if df.empty:
+            st.warning("No player props found in API response.")
+        else:
+            st.dataframe(df)
 
-# -----------------------------
-# NOTES
-# -----------------------------
-st.markdown("""
-### ⚠️ Notes
-- This version uses simulated data  
-- Replace with real APIs for live betting:
-  - Odds API
-  - PrizePicks
-  - Underdog Fantasy  
-- Always verify lines before betting
-""")
+            st.subheader("📊 AI Predictions")
+
+            results = []
+
+            for _, row in df.iterrows():
+                stat_type = "points"
+
+                player_avg = get_player_avg(row["player"], stat_type)
+
+                pick, conf = predict(player_avg, row["line"])
+
+                results.append({
+                    "Player": row["player"],
+                    "Prop": row["prop"],
+                    "Line": row["line"],
+                    "Avg Model Stat": round(player_avg, 2),
+                    "Pick": pick,
+                    "Confidence %": round(conf, 1)
+                })
+
+            results_df = pd.DataFrame(results)
+
+            st.dataframe(results_df.sort_values("Confidence %", ascending=False))
