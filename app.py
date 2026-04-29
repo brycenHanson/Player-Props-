@@ -8,7 +8,7 @@ st.set_page_config(page_title="Player Props AI", layout="wide")
 # =========================
 # CONFIG
 # =========================
-API_KEY = "YOUR_ODDS_API_KEY"
+API_KEY = st.secrets.get("API_KEY", "YOUR_ODDS_API_KEY")
 BASE_URL = "https://api.the-odds-api.com/v4/sports"
 
 SPORTS = {
@@ -18,107 +18,122 @@ SPORTS = {
 }
 
 # =========================
-# FETCH ODDS
+# CACHE API CALLS
 # =========================
+@st.cache_data(ttl=60)
 def fetch_props(sport_key):
     url = f"{BASE_URL}/{sport_key}/odds"
+
     params = {
         "apiKey": API_KEY,
         "regions": "us",
-        "markets": "player_points,player_shots,player_hits",
+        "markets": "player_points",
         "oddsFormat": "american"
     }
 
     try:
-        res = requests.get(url, params=params)
-        data = res.json()
-        return data
+        res = requests.get(url, params=params, timeout=10)
+
+        if res.status_code != 200:
+            return {"error": f"HTTP {res.status_code}", "raw": res.text}
+
+        return res.json()
+
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return []
-
-# =========================
-# MOCK PLAYER STATS (replace with real dataset later)
-# =========================
-def get_player_avg(player_name, stat_type):
-    np.random.seed(abs(hash(player_name)) % 10000)
-
-    base = {
-        "points": 20,
-        "shots": 5,
-        "hits": 3
-    }
-
-    noise = np.random.normal(0, 3)
-    return base.get(stat_type, 10) + noise
+        return {"error": str(e)}
 
 # =========================
 # SIMPLE MODEL
 # =========================
-def predict(player_avg, line):
-    diff = player_avg - line
+def get_player_avg(player):
+    np.random.seed(abs(hash(player)) % 10000)
+    return 20 + np.random.normal(0, 3)
 
-    confidence = min(100, abs(diff) * 12)
+def predict(avg, line):
+    diff = avg - line
+    confidence = min(100, abs(diff) * 10)
 
-    if diff > 0:
-        return "OVER", confidence
-    else:
-        return "UNDER", confidence
+    return ("OVER" if diff > 0 else "UNDER"), round(confidence, 1)
 
 # =========================
 # UI
 # =========================
-st.title("🏀🏒⚾ Player Props Over/Under AI Model")
+st.title("🏀🏒⚾ Player Props AI Dashboard")
 
 sport = st.selectbox("Select Sport", list(SPORTS.keys()))
 sport_key = SPORTS[sport]
 
-if st.button("Load Live Props"):
+if st.button("Load Props"):
+
     data = fetch_props(sport_key)
 
-    if not data:
-        st.warning("No data returned. Check API key or limits.")
-    else:
-        rows = []
+    # =========================
+    # HANDLE ERRORS FIRST
+    # =========================
+    if isinstance(data, dict) and "error" in data:
+        st.error(f"API Error: {data['error']}")
+        st.stop()
 
-        for game in data:
-            for bookmaker in game.get("bookmakers", []):
-                for market in bookmaker.get("markets", []):
-                    if "player" in market["key"]:
-                        for outcome in market["outcomes"]:
-                            rows.append({
-                                "player": outcome.get("description"),
-                                "prop": market["key"],
-                                "line": outcome.get("point", 0)
-                            })
+    if not isinstance(data, list):
+        st.error("Unexpected API response format.")
+        st.json(data)
+        st.stop()
 
-        df = pd.DataFrame(rows)
+    rows = []
 
-        if df.empty:
-            st.warning("No player props found in API response.")
-        else:
-            st.dataframe(df)
+    # =========================
+    # SAFE PARSING
+    # =========================
+    for game in data:
+        if not isinstance(game, dict):
+            continue
 
-            st.subheader("📊 AI Predictions")
+        for bookmaker in game.get("bookmakers", []) or []:
+            for market in bookmaker.get("markets", []) or []:
 
-            results = []
+                if "player" not in market.get("key", ""):
+                    continue
 
-            for _, row in df.iterrows():
-                stat_type = "points"
+                for outcome in market.get("outcomes", []) or []:
 
-                player_avg = get_player_avg(row["player"], stat_type)
+                    rows.append({
+                        "player": outcome.get("description", "Unknown"),
+                        "prop": market.get("key"),
+                        "line": outcome.get("point", 0)
+                    })
 
-                pick, conf = predict(player_avg, row["line"])
+    df = pd.DataFrame(rows)
 
-                results.append({
-                    "Player": row["player"],
-                    "Prop": row["prop"],
-                    "Line": row["line"],
-                    "Avg Model Stat": round(player_avg, 2),
-                    "Pick": pick,
-                    "Confidence %": round(conf, 1)
-                })
+    # =========================
+    # EMPTY STATE
+    # =========================
+    if df.empty:
+        st.warning("No player props found for this sport right now.")
+        st.stop()
 
-            results_df = pd.DataFrame(results)
+    st.subheader("📊 Live Player Props")
+    st.dataframe(df)
 
-            st.dataframe(results_df.sort_values("Confidence %", ascending=False))
+    # =========================
+    # MODEL OUTPUT
+    # =========================
+    st.subheader("🧠 AI Predictions")
+
+    results = []
+
+    for _, row in df.iterrows():
+        avg = get_player_avg(row["player"])
+        pick, conf = predict(avg, row["line"])
+
+        results.append({
+            "Player": row["player"],
+            "Prop": row["prop"],
+            "Line": row["line"],
+            "Model Avg": round(avg, 2),
+            "Pick": pick,
+            "Confidence %": conf
+        })
+
+    result_df = pd.DataFrame(results)
+
+    st.dataframe(result_df.sort_values("Confidence %", ascending=False))
